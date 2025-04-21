@@ -239,14 +239,23 @@ init python:
             
             # We'll have 2 types of notes (like Taiko's don/kat)
             self.num_note_types = 2
+            
+            # Position of the judgment line (hit position)
+            self.judgment_line_x = 100
 
             # define the notes' onset times
             self.onset_times = song.onset_times
             # assign notes to tracks, same length as self.onset_times
             # Now we just need to randomly assign each note to one of the two types (0 or 1)
+            
             self.random_note_types = [
             renpy.random.randint(0, self.num_note_types - 1) for _ in range(len(self.onset_times))
             ]
+
+            # self.random_note_types = [
+            # 1 for _ in range(len(self.onset_times))
+            # ]
+            
 
             # Since we only have one track now, we'll store all notes in a single list
             # The track_idx will determine note type (0 for first type, 1 for second type)
@@ -345,9 +354,10 @@ init python:
             # x = 0 starts from the left
             render.place(self.track_bar_drawable, x=0, y=self.track_yoffset)
 
-            # draw the vertical bar to indicate where the track ends
+            # draw the vertical bar to indicate where the notes should be hit (judgment line)
             # y = 0 starts from the top
-            render.place(self.vertical_bar_drawable, x=self.track_bar_width, y=0)
+            # Place it on the left side for Taiko-style gameplay
+            render.place(self.vertical_bar_drawable, x=self.judgment_line_x, y=0)
 
             # draw the notes
             if self.has_game_started:
@@ -379,20 +389,20 @@ init python:
                             note_yoffset = self.track_yoffset + self.note_yoffset
 
                         # compute where on the horizontal axis the note is
-                        # the horizontal distance from the left that the note has already traveled
-                        # is given by time * speed
-                        note_distance_from_left = note_timestamp * self.note_speed
-                        x_offset = note_distance_from_left
+                        # For Taiko style, notes should travel from right to left now
+                        # Notes should appear at the right side and move toward the judgment line on the left
+                        note_distance_from_right = (self.note_offset - note_timestamp) * self.note_speed
+                        x_offset = self.track_bar_width - note_distance_from_right
                         render.place(note_drawable, x=x_offset, y=note_yoffset)
 
-                    # show hit feedback after the vertical bar
+                    # show hit feedback next to the vertical bar
                     if self.onset_hits[onset] == 'miss':
-                        render.place(self.miss_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=self.track_yoffset)
+                        render.place(self.miss_text_drawable, x=self.judgment_line_x + 20, y=self.track_yoffset)
                     # else show hit text
                     elif self.onset_hits[onset] == 'good':
-                        render.place(self.good_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=self.track_yoffset)
+                        render.place(self.good_text_drawable, x=self.judgment_line_x + 20, y=self.track_yoffset)
                     elif self.onset_hits[onset] == 'perfect':
-                        render.place(self.perfect_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=self.track_yoffset)
+                        render.place(self.perfect_text_drawable, x=self.judgment_line_x + 20, y=self.track_yoffset)
 
             renpy.redraw(self, 0)
             return render
@@ -480,7 +490,7 @@ init python:
             for onset, note_type in zip(self.onset_times, self.random_note_types):
                 # determine if this note should appear on the track
                 time_before_appearance = onset - current_time
-                if time_before_appearance < 0: # already passed the right side of the screen
+                if time_before_appearance < 0: # already passed the judgment line on the left
                     continue
                 # should be on screen
                 # recall that self.note_offset is 3 seconds, the note's lifespan
