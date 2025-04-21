@@ -33,7 +33,7 @@ label rhythm_game_entry_label:
         # disable Esc key menu to prevent the player from saving the game
         $ _game_menu_screen = None
 
-        $ renpy.notify('Use Z and X keys on your keyboard to hit the notes as they reach the end of the track. Z for red notes, X for blue notes. Good luck!')
+        $ renpy.notify('Use Z and X keys on your keyboard to hit the notes when they reach the vertical line. Z for left (red) notes, X for right (blue) notes. Good luck!')
         # call screen rhythm_game(rhythm_game_displayable)
         # $ new_score = _return
         $ new_score = renpy.call_screen(_screen_name='rhythm_game', rhythm_game_displayable=rhythm_game_displayable)
@@ -247,10 +247,17 @@ init python:
             self.onset_times = song.onset_times
             # assign notes to tracks, same length as self.onset_times
             # Now we just need to randomly assign each note to one of the two types (0 or 1)
-            
-            self.random_note_types = [
-            renpy.random.randint(0, self.num_note_types - 1) for _ in range(len(self.onset_times))
-            ]
+            # Create a more balanced pattern with better alternation
+            self.random_note_types = []
+            for i in range(len(self.onset_times)):
+                # For consecutive notes, try to alternate types more often
+                if i > 0 and renpy.random.random() < 0.7:
+                    # Choose the opposite type of the previous note
+                    prev_type = self.random_note_types[-1]
+                    self.random_note_types.append(1 - prev_type)  # 0 becomes 1, 1 becomes 0
+                else:
+                    # Choose a random type
+                    self.random_note_types.append(renpy.random.randint(0, self.num_note_types - 1))
 
             # self.random_note_types = [
             # 1 for _ in range(len(self.onset_times))
@@ -358,6 +365,14 @@ init python:
             # y = 0 starts from the top
             # Place it on the left side for Taiko-style gameplay
             render.place(self.vertical_bar_drawable, x=self.judgment_line_x, y=0)
+            
+            # Add indicators for what key to press
+            # Z indicator (for left/red notes)
+            render.place(Text('Z', color='#ff5555', size=20), 
+                x=self.judgment_line_x - 20, y=self.track_yoffset - 30)
+            # X indicator (for right/blue notes)
+            render.place(Text('X', color='#5555ff', size=20), 
+                x=self.judgment_line_x - 20, y=self.track_yoffset + 30)
 
             # draw the notes
             if self.has_game_started:
@@ -389,10 +404,15 @@ init python:
                             note_yoffset = self.track_yoffset + self.note_yoffset
 
                         # compute where on the horizontal axis the note is
-                        # For Taiko style, notes should travel from right to left now
-                        # Notes should appear at the right side and move toward the judgment line on the left
-                        note_distance_from_right = (self.note_offset - note_timestamp) * self.note_speed
-                        x_offset = self.track_bar_width - note_distance_from_right
+                        # Calculate how far the note should be from the judgment line
+                        # A note should reach the judgment line exactly when time_before_appearance = 0
+                        # This means when the current time equals the onset time
+                        time_to_judgment = onset - curr_time
+                        
+                        # Calculate the x position based on time to judgment
+                        # When time_to_judgment = 0, the note should be at the judgment line (self.judgment_line_x)
+                        # When time_to_judgment = self.note_offset, the note should be at the right edge
+                        x_offset = self.judgment_line_x + (time_to_judgment / self.note_offset) * (self.track_bar_width - self.judgment_line_x)
                         render.place(note_drawable, x=x_offset, y=note_yoffset)
 
                     # show hit feedback next to the vertical bar
@@ -425,15 +445,37 @@ init python:
                 # look up the note type that corresponds to the key pressed
                 note_type = self.keycode_to_note_type[ev.key]
 
-                # Filter active notes that match this note type
-                active_notes_of_type = [(onset, timestamp) for onset, timestamp, ntype in self.active_notes if ntype == note_type]
                 curr_time = st - self.time_offset
-
-                # loop over active notes to check if one is hit
-                for onset, _ in active_notes_of_type:
-                    if self.onset_hits[onset] is not None: # status already determined, one of miss, good, perfect
+                
+                # Find the closest note to the judgment line, regardless of type
+                closest_note = None
+                closest_distance = float('inf')
+                
+                for onset, timestamp, ntype in self.active_notes:
+                    if self.onset_hits[onset] is not None:  # Skip already processed notes
                         continue
-
+                        
+                    # Calculate how close the note is to the judgment line
+                    distance = abs(curr_time - onset)
+                    
+                    # If this note is closer than our current closest, and it's within the hit threshold
+                    if distance < closest_distance and distance <= self.prehit_miss_threshold:
+                        closest_note = (onset, ntype)
+                        closest_distance = distance
+                
+                # If we found a note to hit
+                if closest_note:
+                    onset, note_type_of_note = closest_note
+                    
+                    # Check if the key pressed matches the note type
+                    # If they don't match, it's an automatic miss
+                    if note_type != note_type_of_note:
+                        self.onset_hits[onset] = 'miss'
+                        renpy.redraw(self, 0)
+                        renpy.restart_interaction()
+                        return
+                        
+                    # If we got here, the key pressed matches the note type
                     # compute the time difference between when the key is pressed
                     # and when we consider the note hittable as defined by self.hit_threshold
 
@@ -449,31 +491,22 @@ init python:
 
                     # perfect
                     if -self.perfect_threshold <= time_delta <= self.perfect_threshold:
-                                            self.onset_hits[onset] = 'perfect'
-                                            self.score += SCORE_PERFECT
-                                            # redraw immediately because now the note should disappear from screen
-                                            renpy.redraw(self, 0)
-                                            # refresh the screen
-                                            renpy.restart_interaction()
-
+                        self.onset_hits[onset] = 'perfect'
+                        self.score += SCORE_PERFECT
                     # good
-                    elif (-self.hit_threshold <= time_delta < self.perfect_threshold) or \
-                    (self.perfect_threshold < time_delta <= self.hit_threshold):
+                    elif (-self.hit_threshold <= time_delta < -self.perfect_threshold) or \
+                        (self.perfect_threshold < time_delta <= self.hit_threshold):
                         self.onset_hits[onset] = 'good'
                         self.score += SCORE_GOOD
-                        # redraw immediately because now the note should disappear from screen
-                        renpy.redraw(self, 0)
-                        # refresh the screen
-                        renpy.restart_interaction()
-
                     # miss
-                    elif (-self.prehit_miss_threshold <= time_delta < -self.hit_threshold):
+                    else:
                         self.onset_hits[onset] = 'miss'
                         # no change to score
-                        # redraw immediately because now the note should disappear from screen
-                        renpy.redraw(self, 0)
-                        # refresh the screen
-                        renpy.restart_interaction()
+                    
+                    # redraw immediately because now the note should disappear from screen
+                    renpy.redraw(self, 0)
+                    # refresh the screen
+                    renpy.restart_interaction()
 
 
         def visit(self):
