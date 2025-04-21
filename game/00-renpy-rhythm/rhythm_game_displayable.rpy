@@ -33,7 +33,7 @@ label rhythm_game_entry_label:
         # disable Esc key menu to prevent the player from saving the game
         $ _game_menu_screen = None
 
-        $ renpy.notify('Use the arrow keys on your keyboard to hit the notes as they reach the end of the tracks. Good luck!')
+        $ renpy.notify('Use Z and X keys on your keyboard to hit the notes as they reach the end of the track. Z for red notes, X for blue notes. Good luck!')
         # call screen rhythm_game(rhythm_game_displayable)
         # $ new_score = _return
         $ new_score = renpy.call_screen(_screen_name='rhythm_game', rhythm_game_displayable=rhythm_game_displayable)
@@ -104,12 +104,10 @@ screen rhythm_game(rhythm_game_displayable):
 
     zorder 100 # always on top, covering textbox, quick_menu
 
-    # disable the arrow keys from activating the Quit button
+    # disable Z and X keys from activating the Quit button
     # https://www.renpy.org/doc/html/screens.html#key
-    key 'K_LEFT' action NullAction()
-    key 'K_UP' action NullAction()
-    key 'K_DOWN' action NullAction()
-    key 'K_RIGHT' action NullAction()
+    key 'K_z' action NullAction()
+    key 'K_x' action NullAction()
 
     add Solid('#000')
     add rhythm_game_displayable
@@ -234,28 +232,25 @@ init python:
             # speed = distance / time
             self.note_speed = config.screen_width / self.note_offset
 
-            # number of track bars
-            self.num_track_bars = 4
-            # drawing position
-            self.track_bar_spacing = (config.screen_height - self.y_offset * 2) / (self.num_track_bars - 1)
-            # the yoffset of each track bar
-            self.track_yoffsets = {
-            track_idx: self.y_offset + track_idx * self.track_bar_spacing
-            for track_idx in range(self.num_track_bars)
-            }
+            # We now only have 1 track
+            self.num_track_bars = 1
+            # Center the track vertically
+            self.track_yoffset = config.screen_height / 2 - self.track_bar_height / 2
+            
+            # We'll have 2 types of notes (like Taiko's don/kat)
+            self.num_note_types = 2
 
             # define the notes' onset times
             self.onset_times = song.onset_times
             # assign notes to tracks, same length as self.onset_times
-            # renpy.random.randint is upper-inclusive
-            self.random_track_indices = [
-            renpy.random.randint(0, self.num_track_bars - 1) for _ in range(len(self.onset_times))
+            # Now we just need to randomly assign each note to one of the two types (0 or 1)
+            self.random_note_types = [
+            renpy.random.randint(0, self.num_note_types - 1) for _ in range(len(self.onset_times))
             ]
 
-            # map track_idx to a list of active note timestamps
-            self.active_notes_per_track = {
-            track_idx: [] for track_idx in range(self.num_track_bars)
-            }
+            # Since we only have one track now, we'll store all notes in a single list
+            # The track_idx will determine note type (0 for first type, 1 for second type)
+            self.active_notes = []
 
             # detect and record score
             # map onset timestamp to whether it has been hit, initialized to False
@@ -276,12 +271,11 @@ init python:
             #     miss       good       perfect    good      miss
             # (-0.4, -0.3)[-0.3, -0.1)[-0.1, 0.1](0.1, 0.3](0.3, inf)
 
-            # map pygame key code to track idx
-            self.keycode_to_track_idx = {
-            pygame.K_LEFT: 0,
-            pygame.K_UP: 1,
-            pygame.K_DOWN: 2,
-            pygame.K_RIGHT: 3
+            # Map pygame key code to note type
+            # Z/X for Taiko-style gameplay (Z for don, X for kat)
+            self.keycode_to_note_type = {
+            pygame.K_z: 0,  # First note type (don)
+            pygame.K_x: 1   # Second note type (kat)
             }
 
             # define the drawables
@@ -290,18 +284,15 @@ init python:
             self.perfect_text_drawable = Text('Perfect!', color='#fff', size=40) # bigger text
             self.track_bar_drawable = Solid('#fff', xsize=self.track_bar_width, ysize=self.track_bar_height)
             self.vertical_bar_drawable = Solid('#fff', xsize=self.vertical_bar_width, ysize=config.screen_height)
-            # map track_idx to the note drawable
+            # Map note_type to the note drawable
+            # Using left and right for the two note types (red and blue in Taiko)
             self.note_drawables = {
-            0: Image(IMG_LEFT),
-            1: Image(IMG_UP),
-            2: Image(IMG_DOWN),
-            3: Image(IMG_RIGHT),
+            0: Image(IMG_LEFT),  # First note type (don/red)
+            1: Image(IMG_RIGHT), # Second note type (kat/blue)
             }
             self.note_drawables_large = {
             0: Transform(self.note_drawables[0], zoom=self.zoom_scale),
             1: Transform(self.note_drawables[1], zoom=self.zoom_scale),
-            2: Transform(self.note_drawables[2], zoom=self.zoom_scale),
-            3: Transform(self.note_drawables[3], zoom=self.zoom_scale),
             }
 
             # record all the drawables for self.visit
@@ -350,12 +341,9 @@ init python:
                         x=config.screen_width / 2, y=config.screen_height / 2)
 
             # draw the rhythm game if we are playing the music
-            # draw the horizontal tracks
-            for track_idx in range(self.num_track_bars):
-                # look up the offset for drawing
-                y_offset = self.track_yoffsets[track_idx]
-                # x = 0 starts from the left
-                render.place(self.track_bar_drawable, x=0, y=y_offset)
+            # draw the single horizontal track
+            # x = 0 starts from the left
+            render.place(self.track_bar_drawable, x=0, y=self.track_yoffset)
 
             # draw the vertical bar to indicate where the track ends
             # y = 0 starts from the top
@@ -374,40 +362,37 @@ init python:
                 # is the difference between the current shown time and the cached first st
                 curr_time = st - self.time_offset
 
-                # update self.active_notes_per_track
-                self.active_notes_per_track = self.get_active_notes_per_track(curr_time)
+                # update self.active_notes
+                self.active_notes = self.get_active_notes(curr_time)
 
-                # render notes on each track
-                for track_idx in self.active_notes_per_track:
-                    # look up track yoffset
-                    y_offset = self.track_yoffsets[track_idx]
+                # render notes on the single track
+                # loop through active notes
+                for onset, note_timestamp, note_type in self.active_notes:
+                    # render the notes that are active and haven't been hit
+                    if self.onset_hits[onset] is None:
+                        # zoom in on the note if it is within the hit threshold
+                        if abs(curr_time - onset) <= self.hit_threshold:
+                            note_drawable = self.note_drawables_large[note_type]
+                            note_yoffset = self.track_yoffset + self.note_yoffset_large 
+                        else:
+                            note_drawable = self.note_drawables[note_type]
+                            note_yoffset = self.track_yoffset + self.note_yoffset
 
-                    # loop through active notes
-                    for onset, note_timestamp in self.active_notes_per_track[track_idx]:
-                        # render the notes that are active and haven't been hit
-                        if self.onset_hits[onset] is None:
-                            # zoom in on the note if it is within the hit threshold
-                            if abs(curr_time - onset) <= self.hit_threshold:
-                                note_drawable = self.note_drawables_large[track_idx]
-                                note_yoffset = y_offset + self.note_yoffset_large 
-                            else:
-                                note_drawable = self.note_drawables[track_idx]
-                                note_yoffset = y_offset + self.note_yoffset
+                        # compute where on the horizontal axis the note is
+                        # the horizontal distance from the left that the note has already traveled
+                        # is given by time * speed
+                        note_distance_from_left = note_timestamp * self.note_speed
+                        x_offset = note_distance_from_left
+                        render.place(note_drawable, x=x_offset, y=note_yoffset)
 
-                            # compute where on the horizontal axis the note is
-                            # the horizontal distance from the left that the note has already traveled
-                            # is given by time * speed
-                            note_distance_from_left = note_timestamp * self.note_speed
-                            x_offset = note_distance_from_left
-                            render.place(note_drawable, x=x_offset, y=note_yoffset)
-
-                        elif self.onset_hits[onset] == 'miss':
-                            render.place(self.miss_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=y_offset)
-                        # else show hit text
-                        elif self.onset_hits[onset] == 'good':
-                            render.place(self.good_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=y_offset)
-                        elif self.onset_hits[onset] == 'perfect':
-                            render.place(self.perfect_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=y_offset)
+                    # show hit feedback after the vertical bar
+                    if self.onset_hits[onset] == 'miss':
+                        render.place(self.miss_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=self.track_yoffset)
+                    # else show hit text
+                    elif self.onset_hits[onset] == 'good':
+                        render.place(self.good_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=self.track_yoffset)
+                    elif self.onset_hits[onset] == 'perfect':
+                        render.place(self.perfect_text_drawable, x=self.track_bar_width + self.hit_text_xoffset, y=self.track_yoffset)
 
             renpy.redraw(self, 0)
             return render
@@ -424,17 +409,18 @@ init python:
 
             # check if some keys have been pressed
             if ev.type == pygame.KEYDOWN:
-                # only handle the four keys we defined
-                if not ev.key in self.keycode_to_track_idx:
+                # only handle the two keys we defined
+                if not ev.key in self.keycode_to_note_type:
                     return
-                # look up the track that correponds to the key pressed
-                track_idx = self.keycode_to_track_idx[ev.key]
+                # look up the note type that corresponds to the key pressed
+                note_type = self.keycode_to_note_type[ev.key]
 
-                active_notes_on_track = self.active_notes_per_track[track_idx]
+                # Filter active notes that match this note type
+                active_notes_of_type = [(onset, timestamp) for onset, timestamp, ntype in self.active_notes if ntype == note_type]
                 curr_time = st - self.time_offset
 
                 # loop over active notes to check if one is hit
-                for onset, _ in active_notes_on_track:
+                for onset, _ in active_notes_of_type:
                     if self.onset_hits[onset] is not None: # status already determined, one of miss, good, perfect
                         continue
 
@@ -488,20 +474,18 @@ init python:
             renpy.music.queue([self.silence_start, self.audio_path], channel=CHANNEL_RHYTHM_GAME, loop=False)
             self.has_game_started = True
 
-        def get_active_notes_per_track(self, current_time):
-            active_notes = {
-            track_idx: [] for track_idx in range(self.num_track_bars)
-            }
+        def get_active_notes(self, current_time):
+            active_notes = []
 
-            for onset, track_idx in zip(self.onset_times, self.random_track_indices):
+            for onset, note_type in zip(self.onset_times, self.random_note_types):
                 # determine if this note should appear on the track
                 time_before_appearance = onset - current_time
-                if time_before_appearance < 0: # already below the bottom of the screen
+                if time_before_appearance < 0: # already passed the right side of the screen
                     continue
                 # should be on screen
                 # recall that self.note_offset is 3 seconds, the note's lifespan
                 elif time_before_appearance <= self.note_offset:
-                    active_notes[track_idx].append((onset, time_before_appearance))
+                    active_notes.append((onset, time_before_appearance, note_type))
                 # there is still time before the next note should show
                 # break out of the loop so we don't process subsequent notes that are even later
                 elif time_before_appearance > self.note_offset:
